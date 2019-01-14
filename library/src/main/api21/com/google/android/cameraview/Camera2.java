@@ -20,7 +20,6 @@ import android.annotation.TargetApi;
 import android.content.Context;
 import android.graphics.ImageFormat;
 import android.graphics.SurfaceTexture;
-import android.hardware.Camera;
 import android.hardware.camera2.CameraAccessException;
 import android.hardware.camera2.CameraCaptureSession;
 import android.hardware.camera2.CameraCharacteristics;
@@ -44,6 +43,9 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Set;
 import java.util.SortedSet;
@@ -55,7 +57,7 @@ import extension.record.RecorderStatus;
 class Camera2 extends CameraViewImpl {
     private static final int SENSOR_ORIENTATION_DEFAULT_DEGREES = 90;
     private static final int SENSOR_ORIENTATION_INVERSE_DEGREES = 270;
-    private static final String VIDEO_EXTEMTION = ".mp4";
+    private static final String VIDEO_EXTENSION = ".mp4";
     private Integer mSensorOrientation;
     private static final String TAG = "Camera2";
 
@@ -85,7 +87,7 @@ class Camera2 extends CameraViewImpl {
         public void onOpened(@NonNull CameraDevice camera) {
             mCameraDevice = camera;
             mCallback.onCameraOpened();
-            startCaptureSession();
+            startPreviewSession();
         }
 
         @Override
@@ -102,6 +104,9 @@ class Camera2 extends CameraViewImpl {
         public void onError(@NonNull CameraDevice camera, int error) {
             Log.e(TAG, "onError: " + camera.getId() + " (" + error + ")");
             mCameraDevice = null;
+            if (mRecordCallback != null) {
+                mRecordCallback.onError(recordTask, "open camera error, cameraId: " + camera.getId() + ", error: " + error);
+            }
         }
 
     };
@@ -215,6 +220,9 @@ class Camera2 extends CameraViewImpl {
     private RecordTask recordTask;
     private RecorderStatus mStatus = RecorderStatus.RELEASED;//录制状态
     private File tempVideoFile;
+    private android.util.Size mVideoSize;
+    private android.util.Size mPreviewSize;
+    private boolean videoPreviewMode = true;//视频预览模式预览到录制无卡顿，但预览尺寸可能受限
 
     Camera2(Callback callback, PreviewImpl preview, Context context) {
         super(callback, preview);
@@ -223,7 +231,7 @@ class Camera2 extends CameraViewImpl {
         mPreview.setCallback(new PreviewImpl.Callback() {
             @Override
             public void onSurfaceChanged() {
-                startCaptureSession();
+                startPreviewSession();
             }
         });
     }
@@ -262,6 +270,9 @@ class Camera2 extends CameraViewImpl {
 
     @Override
     boolean startRecord(RecordCallback callback) {
+        if (!videoPreviewMode) {
+            startVideoPreviewSession();
+        }
         if (mMediaRecorder != null) {
             mMediaRecorder.start();
         }
@@ -272,7 +283,7 @@ class Camera2 extends CameraViewImpl {
     void stopRecord() {
         stopRecordVideoInner();
         if (recordTask.getOutput() == null) {
-            recordTask.setOutput(new File(tempVideoFile.getParent(), System.currentTimeMillis() + VIDEO_EXTEMTION));
+            recordTask.setOutput(new File(tempVideoFile.getParent(), System.currentTimeMillis() + VIDEO_EXTENSION));
         }
         tempVideoFile.renameTo(recordTask.getOutput());
         if (mRecordCallback != null) {
@@ -319,7 +330,7 @@ class Camera2 extends CameraViewImpl {
         if (mCaptureSession != null) {
             mCaptureSession.close();
             mCaptureSession = null;
-            startCaptureSession();
+//            startPreviewSession();
         }
         return true;
     }
@@ -465,7 +476,8 @@ class Camera2 extends CameraViewImpl {
             throw new IllegalStateException("Failed to get configuration map: " + mCameraId);
         }
         mPreviewSizes.clear();
-        for (android.util.Size size : map.getOutputSizes(mPreview.getOutputClass())) {
+        for (android.util.Size size :
+                videoPreviewMode? map.getOutputSizes(MediaRecorder.class) : map.getOutputSizes(mPreview.getOutputClass())) {
             int width = size.getWidth();
             int height = size.getHeight();
             if (width <= MAX_PREVIEW_WIDTH && height <= MAX_PREVIEW_HEIGHT) {
@@ -518,8 +530,16 @@ class Camera2 extends CameraViewImpl {
      * <p>This rewrites {@link #mPreviewRequestBuilder}.</p>
      * <p>The result will be continuously processed in {@link #mSessionCallback}.</p>
      */
-    void startCaptureSession() {
-        /*if (!isCameraOpened() || !mPreview.isReady() || mImageReader == null) {
+    void startPreviewSession() {
+        if (videoPreviewMode) {
+            startVideoPreviewSession();
+        } else {
+            startCapturePreviewSession();
+        }
+    }
+
+    private void startCapturePreviewSession() {
+        if (!isCameraOpened() || !mPreview.isReady() || mImageReader == null) {
             return;
         }
         Size previewSize = chooseOptimalSize();
@@ -532,8 +552,7 @@ class Camera2 extends CameraViewImpl {
                     mSessionCallback, null);
         } catch (CameraAccessException e) {
             throw new RuntimeException("Failed to start camera session");
-        }*/
-        startVideoPreview();
+        }
     }
 
     /**
@@ -562,6 +581,38 @@ class Camera2 extends CameraViewImpl {
         }
         // If no size is big enough, pick the largest one.
         return candidates.last();
+    }
+
+    /**
+     * Given {@code choices} of {@code Size}s supported by a camera, chooses the smallest one whose
+     * width and height are at least as large as the respective requested values, and whose aspect
+     * ratio matches with the specified value.
+     *
+     * @param choices     The list of sizes that the camera supports for the intended output class
+     * @param width       The minimum desired width
+     * @param height      The minimum desired height
+     * @param aspectRatio The aspect ratio
+     * @return The optimal {@code Size}, or an arbitrary one if none were big enough
+     */
+    private static android.util.Size chooseOptimalSize(android.util.Size[] choices, int width, int height, android.util.Size aspectRatio) {
+        // Collect the supported resolutions that are at least as big as the preview Surface
+        List<android.util.Size> bigEnough = new ArrayList<>();
+        int w = aspectRatio.getWidth();
+        int h = aspectRatio.getHeight();
+        for (android.util.Size option : choices) {
+            if (option.getHeight() == option.getWidth() * h / w &&
+                    option.getWidth() >= width && option.getHeight() >= height) {
+                bigEnough.add(option);
+            }
+        }
+
+        // Pick the smallest of those, assuming we found any
+        if (bigEnough.size() > 0) {
+            return Collections.min(bigEnough, new CompareSizesByArea());
+        } else {
+            Log.e(TAG, "Couldn't find any suitable preview size");
+            return choices[0];
+        }
     }
 
     /**
@@ -806,63 +857,18 @@ class Camera2 extends CameraViewImpl {
 
     }
 
-    /**
-     * 设置相机的参数
-     *
-     * @param camera
-     */
-    private void setCameraVideoParameter(Camera camera) {
-        if (camera == null) return;
-        Camera.Parameters parameters = camera.getParameters();
-        //获取相机支持的>=20fps的帧率，用于设置给MediaRecorder
-        //因为获取的数值是*1000的，所以要除以1000
-        List<int[]> previewFpsRange = parameters.getSupportedPreviewFpsRange();
-        for (int[] ints : previewFpsRange) {
-            if (ints[0] >= 20000) {
-                mFps = ints[0] / 1000;
-                break;
-            }
-        }
-        //设置聚焦模式
-        List<String> focusModes = parameters.getSupportedFocusModes();
-        if (focusModes.contains(Camera.Parameters.FOCUS_MODE_CONTINUOUS_VIDEO)) {
-            parameters.setFocusMode(Camera.Parameters.FOCUS_MODE_CONTINUOUS_VIDEO);
-        } else if (focusModes.contains(Camera.Parameters.FOCUS_MODE_CONTINUOUS_PICTURE)) {
-            parameters.setFocusMode(Camera.Parameters.FOCUS_MODE_CONTINUOUS_PICTURE);
-        } else {
-            parameters.setFocusMode(Camera.Parameters.FOCUS_MODE_AUTO);
-        }
-
-
-        //设置预览尺寸,因为预览的尺寸和最终是录制视频的尺寸无关，所以我们选取最大的数值
-        //通常最大的是手机的分辨率，这样可以让预览画面尽可能清晰并且尺寸不变形，前提是TextureView的尺寸是全屏或者接近全屏
-//        List<Camera.Size> supportedPreviewSizes = parameters.getSupportedPreviewSizes();
-//        parameters.setPreviewSize(supportedPreviewSizes.get(0).width, supportedPreviewSizes.get(0).height);
-        //缩短Recording启动时间
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.ICE_CREAM_SANDWICH) {
-            parameters.setRecordingHint(true);
-        }
-        //是否支持影像稳定能力，支持则开启
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.ICE_CREAM_SANDWICH_MR1) {
-            if (parameters.isVideoStabilizationSupported())
-                parameters.setVideoStabilization(true);
-        }
-        camera.setParameters(parameters);
-    }
-
-    private void startVideoPreview() {
+    private void startVideoPreviewSession() {
         if (null == mCameraDevice || null == mPreview || !mPreview.isReady()) {
             return;
         }
         try {
             closePreviewSession();
+            setUpAllSize();
             setUpMediaRecorder();
             SurfaceTexture texture = (SurfaceTexture)mPreview.getSurfaceTexture();
             assert texture != null;
-            Size previewSize = chooseOptimalSize();
-            Surface surface = mPreview.getSurface();
 //            texture.setDefaultBufferSize(previewSize.getWidth(), previewSize.getHeight());
-            mPreview.setBufferSize(previewSize.getWidth(), previewSize.getHeight());
+            mPreview.setBufferSize(mPreviewSize.getWidth(), mPreviewSize.getHeight());
             mPreviewRequestBuilder = mCameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_RECORD);
             List<Surface> surfaces = new ArrayList<>();
 
@@ -874,9 +880,9 @@ class Camera2 extends CameraViewImpl {
             // Set up Surface for the MediaRecorder
             Surface recorderSurface = mMediaRecorder.getSurface();
             surfaces.add(recorderSurface);
-            surfaces.add(mImageReader.getSurface());
             mPreviewRequestBuilder.addTarget(recorderSurface);
 
+            surfaces.add(mImageReader.getSurface());
             // Start a capture session
             // Once the session starts, we can update the UI and start recording
             mCameraDevice.createCaptureSession(surfaces, mSessionCallback, null);
@@ -884,6 +890,14 @@ class Camera2 extends CameraViewImpl {
             e.printStackTrace();
         }
 
+    }
+
+    private void setUpAllSize() {
+        StreamConfigurationMap map = mCameraCharacteristics.get(
+                CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
+        mVideoSize = chooseVideoSize(map.getOutputSizes(MediaRecorder.class), mAspectRatio);
+        mPreviewSize = chooseOptimalSize(map.getOutputSizes(SurfaceTexture.class),
+                mPreview.getWidth(), mPreview.getHeight(), mVideoSize);
     }
 
     private void setUpMediaRecorder() throws IOException {
@@ -898,9 +912,10 @@ class Camera2 extends CameraViewImpl {
         mMediaRecorder.setOutputFile(tempVideoFile.getAbsolutePath());
         mMediaRecorder.setVideoEncodingBitRate(1024*1024);
         mMediaRecorder.setVideoFrameRate(30);
-        mMediaRecorder.setVideoSize(recordTask.getWidth(), recordTask.getHeight());
+        mMediaRecorder.setVideoSize(mVideoSize.getWidth(), mVideoSize.getHeight());
         mMediaRecorder.setVideoEncoder(MediaRecorder.VideoEncoder.H264);
         mMediaRecorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC);
+        mMediaRecorder.setOnErrorListener(onErrorListener);
         switch (mSensorOrientation) {
             case SENSOR_ORIENTATION_DEFAULT_DEGREES:
 //                mMediaRecorder.setOrientationHint(DEFAULT_ORIENTATIONS.get(rotation));
@@ -965,29 +980,21 @@ class Camera2 extends CameraViewImpl {
 
 
     /**
-     * 自定义MediaRecorder的录制参数
+     * In this sample, we choose a video size with 3x4 aspect ratio. Also, we don't use sizes
+     * larger than 1080p, since MediaRecorder cannot handle such a high-resolution video.
+     *
+     * @param choices The list of available sizes
+     * @return The video size
      */
-    private void setConfig() {
-        //设置封装格式 默认是MP4
-        mMediaRecorder.setOutputFormat(MediaRecorder.OutputFormat.DEFAULT);
-        //音频编码
-        mMediaRecorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC);
-        //图像编码
-        mMediaRecorder.setVideoEncoder(MediaRecorder.VideoEncoder.H264);
-        //声道
-        mMediaRecorder.setAudioChannels(1);
-        //设置最大录像时间 单位：毫秒
-        mMediaRecorder.setMaxDuration(60 * 1000);
-        //设置最大录制的大小60M 单位，字节
-        mMediaRecorder.setMaxFileSize(60 * 1024 * 1024);
-        //再用44.1Hz采样率
-        mMediaRecorder.setAudioEncodingBitRate(22050);
-        //设置帧率，该帧率必须是硬件支持的，可以通过Camera.CameraParameter.getSupportedPreviewFpsRange()方法获取相机支持的帧率
-        mMediaRecorder.setVideoFrameRate(mFps);
-        //设置码率
-        mMediaRecorder.setVideoEncodingBitRate(500 * 1024 * 8);
-        //设置视频尺寸，通常搭配码率一起使用，可调整视频清晰度
-        mMediaRecorder.setVideoSize(1280, 720);
+    private static android.util.Size chooseVideoSize(android.util.Size[] choices, AspectRatio aspectRatio) {
+        for (android.util.Size size : choices) {
+            if (size.getWidth() == size.getHeight() * aspectRatio.getX() / aspectRatio.getY()
+                    && (size.getWidth() <= 480 || size.getWidth() <= 720)) {
+                return size;
+            }
+        }
+        Log.e(TAG, "Couldn't find any suitable video size");
+        return choices[choices.length - 1];
     }
 
     //录制出错的回调
@@ -1007,4 +1014,18 @@ class Camera2 extends CameraViewImpl {
             }
         }
     };
+
+    /**
+     * Compares two {@code Size}s based on their areas.
+     */
+    static class CompareSizesByArea implements Comparator<android.util.Size> {
+
+        @Override
+        public int compare(android.util.Size lhs, android.util.Size rhs) {
+            // We cast here to ensure the multiplications won't overflow
+            return Long.signum((long) lhs.getWidth() * lhs.getHeight() -
+                    (long) rhs.getWidth() * rhs.getHeight());
+        }
+
+    }
 }
