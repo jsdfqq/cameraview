@@ -242,14 +242,14 @@ public class CameraView extends FrameLayout {
      * Open a camera device and start showing camera preview. This is typically called from
      * {@link Activity#onResume()}.
      */
-    public void start() {
-        if (!mImpl.start()) {
+    public void start(RecordTask task) {
+        if (!mImpl.start(task)) {
             //store the state ,and restore this state after fall back o Camera1
             Parcelable state=onSaveInstanceState();
             // Camera2 uses legacy hardware layer; fall back to Camera1
             mImpl = new Camera1(mCallbacks, createPreviewImpl(getContext()));
             onRestoreInstanceState(state);
-            mImpl.start();
+            mImpl.start(task);
         }
     }
 

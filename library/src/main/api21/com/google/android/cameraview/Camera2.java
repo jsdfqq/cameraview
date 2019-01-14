@@ -19,6 +19,8 @@ package com.google.android.cameraview;
 import android.annotation.TargetApi;
 import android.content.Context;
 import android.graphics.ImageFormat;
+import android.graphics.SurfaceTexture;
+import android.hardware.Camera;
 import android.hardware.camera2.CameraAccessException;
 import android.hardware.camera2.CameraCaptureSession;
 import android.hardware.camera2.CameraCharacteristics;
@@ -28,22 +30,33 @@ import android.hardware.camera2.CaptureRequest;
 import android.hardware.camera2.CaptureResult;
 import android.hardware.camera2.TotalCaptureResult;
 import android.hardware.camera2.params.StreamConfigurationMap;
+import android.media.CamcorderProfile;
 import android.media.Image;
 import android.media.ImageReader;
+import android.media.MediaRecorder;
+import android.os.Build;
 import android.support.annotation.NonNull;
 import android.util.Log;
 import android.util.SparseIntArray;
 import android.view.Surface;
 
+import java.io.File;
+import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.util.Arrays;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Set;
 import java.util.SortedSet;
+
+import extension.record.RecorderStatus;
 
 @SuppressWarnings("MissingPermission")
 @TargetApi(21)
 class Camera2 extends CameraViewImpl {
-
+    private static final int SENSOR_ORIENTATION_DEFAULT_DEGREES = 90;
+    private static final int SENSOR_ORIENTATION_INVERSE_DEGREES = 270;
+    private static final String VIDEO_EXTEMTION = ".mp4";
+    private Integer mSensorOrientation;
     private static final String TAG = "Camera2";
 
     private static final SparseIntArray INTERNAL_FACINGS = new SparseIntArray();
@@ -70,7 +83,7 @@ class Camera2 extends CameraViewImpl {
 
         @Override
         public void onOpened(@NonNull CameraDevice camera) {
-            mCamera = camera;
+            mCameraDevice = camera;
             mCallback.onCameraOpened();
             startCaptureSession();
         }
@@ -82,13 +95,13 @@ class Camera2 extends CameraViewImpl {
 
         @Override
         public void onDisconnected(@NonNull CameraDevice camera) {
-            mCamera = null;
+            mCameraDevice = null;
         }
 
         @Override
         public void onError(@NonNull CameraDevice camera, int error) {
             Log.e(TAG, "onError: " + camera.getId() + " (" + error + ")");
-            mCamera = null;
+            mCameraDevice = null;
         }
 
     };
@@ -98,7 +111,7 @@ class Camera2 extends CameraViewImpl {
 
         @Override
         public void onConfigured(@NonNull CameraCaptureSession session) {
-            if (mCamera == null) {
+            if (mCameraDevice == null) {
                 return;
             }
             mCaptureSession = session;
@@ -174,7 +187,7 @@ class Camera2 extends CameraViewImpl {
 
     private CameraCharacteristics mCameraCharacteristics;
 
-    CameraDevice mCamera;
+    CameraDevice mCameraDevice;
 
     CameraCaptureSession mCaptureSession;
 
@@ -196,8 +209,16 @@ class Camera2 extends CameraViewImpl {
 
     private int mDisplayOrientation;
 
+    private int mFps;//帧率
+    private MediaRecorder mMediaRecorder;
+    private RecordCallback mRecordCallback;
+    private RecordTask recordTask;
+    private RecorderStatus mStatus = RecorderStatus.RELEASED;//录制状态
+    private File tempVideoFile;
+
     Camera2(Callback callback, PreviewImpl preview, Context context) {
         super(callback, preview);
+        tempVideoFile = new File(context.getExternalFilesDir("record_video"), "temp.mp4");
         mCameraManager = (CameraManager) context.getSystemService(Context.CAMERA_SERVICE);
         mPreview.setCallback(new PreviewImpl.Callback() {
             @Override
@@ -208,7 +229,12 @@ class Camera2 extends CameraViewImpl {
     }
 
     @Override
-    boolean start() {
+    boolean start(RecordTask task) {
+        if (task == null) {
+            recordTask = new RecordTask.Builder().build();
+        } else {
+            recordTask = task;
+        }
         if (!chooseCameraIdByFacing()) {
             return false;
         }
@@ -224,9 +250,9 @@ class Camera2 extends CameraViewImpl {
             mCaptureSession.close();
             mCaptureSession = null;
         }
-        if (mCamera != null) {
-            mCamera.close();
-            mCamera = null;
+        if (mCameraDevice != null) {
+            mCameraDevice.close();
+            mCameraDevice = null;
         }
         if (mImageReader != null) {
             mImageReader.close();
@@ -235,8 +261,28 @@ class Camera2 extends CameraViewImpl {
     }
 
     @Override
+    boolean startRecord(RecordCallback callback) {
+        if (mMediaRecorder != null) {
+            mMediaRecorder.start();
+        }
+        return false;
+    }
+
+    @Override
+    void stopRecord() {
+        stopRecordVideoInner();
+        if (recordTask.getOutput() == null) {
+            recordTask.setOutput(new File(tempVideoFile.getParent(), System.currentTimeMillis() + VIDEO_EXTEMTION));
+        }
+        tempVideoFile.renameTo(recordTask.getOutput());
+        if (mRecordCallback != null) {
+            mRecordCallback.onFinish(recordTask);
+        }
+    }
+
+    @Override
     boolean isCameraOpened() {
-        return mCamera != null;
+        return mCameraDevice != null;
     }
 
     @Override
@@ -247,7 +293,7 @@ class Camera2 extends CameraViewImpl {
         mFacing = facing;
         if (isCameraOpened()) {
             stop();
-            start();
+            start(recordTask);
         }
     }
 
@@ -399,6 +445,7 @@ class Camera2 extends CameraViewImpl {
             // The operation can reach here when the only camera device is an external one.
             // We treat it as facing back.
             mFacing = Constants.FACING_BACK;
+
             return true;
         } catch (CameraAccessException e) {
             throw new RuntimeException("Failed to get a list of camera devices", e);
@@ -411,6 +458,7 @@ class Camera2 extends CameraViewImpl {
      * {@link #mAspectRatio}.</p>
      */
     private void collectCameraInfo() {
+        mSensorOrientation = mCameraCharacteristics.get(CameraCharacteristics.SENSOR_ORIENTATION);
         StreamConfigurationMap map = mCameraCharacteristics.get(
                 CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
         if (map == null) {
@@ -471,20 +519,21 @@ class Camera2 extends CameraViewImpl {
      * <p>The result will be continuously processed in {@link #mSessionCallback}.</p>
      */
     void startCaptureSession() {
-        if (!isCameraOpened() || !mPreview.isReady() || mImageReader == null) {
+        /*if (!isCameraOpened() || !mPreview.isReady() || mImageReader == null) {
             return;
         }
         Size previewSize = chooseOptimalSize();
         mPreview.setBufferSize(previewSize.getWidth(), previewSize.getHeight());
         Surface surface = mPreview.getSurface();
         try {
-            mPreviewRequestBuilder = mCamera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);
+            mPreviewRequestBuilder = mCameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);
             mPreviewRequestBuilder.addTarget(surface);
-            mCamera.createCaptureSession(Arrays.asList(surface, mImageReader.getSurface()),
+            mCameraDevice.createCaptureSession(Arrays.asList(surface, mImageReader.getSurface()),
                     mSessionCallback, null);
         } catch (CameraAccessException e) {
             throw new RuntimeException("Failed to start camera session");
-        }
+        }*/
+        startVideoPreview();
     }
 
     /**
@@ -595,7 +644,7 @@ class Camera2 extends CameraViewImpl {
      */
     void captureStillPicture() {
         try {
-            CaptureRequest.Builder captureRequestBuilder = mCamera.createCaptureRequest(
+            CaptureRequest.Builder captureRequestBuilder = mCameraDevice.createCaptureRequest(
                     CameraDevice.TEMPLATE_STILL_CAPTURE);
             captureRequestBuilder.addTarget(mImageReader.getSurface());
             captureRequestBuilder.set(CaptureRequest.CONTROL_AF_MODE,
@@ -757,4 +806,205 @@ class Camera2 extends CameraViewImpl {
 
     }
 
+    /**
+     * 设置相机的参数
+     *
+     * @param camera
+     */
+    private void setCameraVideoParameter(Camera camera) {
+        if (camera == null) return;
+        Camera.Parameters parameters = camera.getParameters();
+        //获取相机支持的>=20fps的帧率，用于设置给MediaRecorder
+        //因为获取的数值是*1000的，所以要除以1000
+        List<int[]> previewFpsRange = parameters.getSupportedPreviewFpsRange();
+        for (int[] ints : previewFpsRange) {
+            if (ints[0] >= 20000) {
+                mFps = ints[0] / 1000;
+                break;
+            }
+        }
+        //设置聚焦模式
+        List<String> focusModes = parameters.getSupportedFocusModes();
+        if (focusModes.contains(Camera.Parameters.FOCUS_MODE_CONTINUOUS_VIDEO)) {
+            parameters.setFocusMode(Camera.Parameters.FOCUS_MODE_CONTINUOUS_VIDEO);
+        } else if (focusModes.contains(Camera.Parameters.FOCUS_MODE_CONTINUOUS_PICTURE)) {
+            parameters.setFocusMode(Camera.Parameters.FOCUS_MODE_CONTINUOUS_PICTURE);
+        } else {
+            parameters.setFocusMode(Camera.Parameters.FOCUS_MODE_AUTO);
+        }
+
+
+        //设置预览尺寸,因为预览的尺寸和最终是录制视频的尺寸无关，所以我们选取最大的数值
+        //通常最大的是手机的分辨率，这样可以让预览画面尽可能清晰并且尺寸不变形，前提是TextureView的尺寸是全屏或者接近全屏
+//        List<Camera.Size> supportedPreviewSizes = parameters.getSupportedPreviewSizes();
+//        parameters.setPreviewSize(supportedPreviewSizes.get(0).width, supportedPreviewSizes.get(0).height);
+        //缩短Recording启动时间
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.ICE_CREAM_SANDWICH) {
+            parameters.setRecordingHint(true);
+        }
+        //是否支持影像稳定能力，支持则开启
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.ICE_CREAM_SANDWICH_MR1) {
+            if (parameters.isVideoStabilizationSupported())
+                parameters.setVideoStabilization(true);
+        }
+        camera.setParameters(parameters);
+    }
+
+    private void startVideoPreview() {
+        if (null == mCameraDevice || null == mPreview || !mPreview.isReady()) {
+            return;
+        }
+        try {
+            closePreviewSession();
+            setUpMediaRecorder();
+            SurfaceTexture texture = (SurfaceTexture)mPreview.getSurfaceTexture();
+            assert texture != null;
+            Size previewSize = chooseOptimalSize();
+            Surface surface = mPreview.getSurface();
+//            texture.setDefaultBufferSize(previewSize.getWidth(), previewSize.getHeight());
+            mPreview.setBufferSize(previewSize.getWidth(), previewSize.getHeight());
+            mPreviewRequestBuilder = mCameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_RECORD);
+            List<Surface> surfaces = new ArrayList<>();
+
+            // Set up Surface for the camera preview
+            Surface previewSurface = new Surface(texture);
+            surfaces.add(previewSurface);
+            mPreviewRequestBuilder.addTarget(previewSurface);
+
+            // Set up Surface for the MediaRecorder
+            Surface recorderSurface = mMediaRecorder.getSurface();
+            surfaces.add(recorderSurface);
+            surfaces.add(mImageReader.getSurface());
+            mPreviewRequestBuilder.addTarget(recorderSurface);
+
+            // Start a capture session
+            // Once the session starts, we can update the UI and start recording
+            mCameraDevice.createCaptureSession(surfaces, mSessionCallback, null);
+        } catch (CameraAccessException | IOException e) {
+            e.printStackTrace();
+        }
+
+    }
+
+    private void setUpMediaRecorder() throws IOException {
+        if (mMediaRecorder != null) {
+            mMediaRecorder.reset();
+        } else {
+            mMediaRecorder = new MediaRecorder();
+        }
+        mMediaRecorder.setAudioSource(MediaRecorder.AudioSource.MIC);
+        mMediaRecorder.setVideoSource(MediaRecorder.VideoSource.SURFACE);
+        mMediaRecorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4);
+        mMediaRecorder.setOutputFile(tempVideoFile.getAbsolutePath());
+        mMediaRecorder.setVideoEncodingBitRate(1024*1024);
+        mMediaRecorder.setVideoFrameRate(30);
+        mMediaRecorder.setVideoSize(recordTask.getWidth(), recordTask.getHeight());
+        mMediaRecorder.setVideoEncoder(MediaRecorder.VideoEncoder.H264);
+        mMediaRecorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC);
+        switch (mSensorOrientation) {
+            case SENSOR_ORIENTATION_DEFAULT_DEGREES:
+//                mMediaRecorder.setOrientationHint(DEFAULT_ORIENTATIONS.get(rotation));
+                break;
+            case SENSOR_ORIENTATION_INVERSE_DEGREES:
+//                mMediaRecorder.setOrientationHint(INVERSE_ORIENTATIONS.get(rotation));
+                break;
+        }
+        mMediaRecorder.prepare();
+    }
+
+    private void closePreviewSession() {
+        if (mCaptureSession != null) {
+            mCaptureSession.close();
+            mCaptureSession = null;
+        }
+    }
+
+    private void stopRecordVideoInner() {
+        // UI
+//        mIsRecordingVideo = false;
+        // Stop recording
+        mMediaRecorder.stop();
+        mMediaRecorder.reset();
+    }
+
+    /**
+     * 释放MediaRecorder
+     */
+    private void releaseMediaRecorder() {
+        if (mMediaRecorder != null) {
+            if (mStatus == RecorderStatus.RELEASED) return;
+            mMediaRecorder.setOnErrorListener(null);
+            mMediaRecorder.setPreviewDisplay(null);
+            mMediaRecorder.reset();
+            mMediaRecorder.release();
+            mMediaRecorder = null;
+            mStatus = RecorderStatus.RELEASED;
+        }
+    }
+
+
+    /**
+     * 通过系统的CamcorderProfile设置MediaRecorder的录制参数
+     */
+    private void setProfile() {
+        CamcorderProfile profile = null;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.HONEYCOMB) {
+            if (CamcorderProfile.hasProfile(CamcorderProfile.QUALITY_1080P)) {
+                profile = CamcorderProfile.get(CamcorderProfile.QUALITY_1080P);
+            } else if (CamcorderProfile.hasProfile(CamcorderProfile.QUALITY_720P)) {
+                profile = CamcorderProfile.get(CamcorderProfile.QUALITY_720P);
+            } else if (CamcorderProfile.hasProfile(CamcorderProfile.QUALITY_480P)) {
+                profile = CamcorderProfile.get(CamcorderProfile.QUALITY_480P);
+
+            }
+        }
+        if (profile != null) {
+            mMediaRecorder.setProfile(profile);
+        }
+    }
+
+
+    /**
+     * 自定义MediaRecorder的录制参数
+     */
+    private void setConfig() {
+        //设置封装格式 默认是MP4
+        mMediaRecorder.setOutputFormat(MediaRecorder.OutputFormat.DEFAULT);
+        //音频编码
+        mMediaRecorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC);
+        //图像编码
+        mMediaRecorder.setVideoEncoder(MediaRecorder.VideoEncoder.H264);
+        //声道
+        mMediaRecorder.setAudioChannels(1);
+        //设置最大录像时间 单位：毫秒
+        mMediaRecorder.setMaxDuration(60 * 1000);
+        //设置最大录制的大小60M 单位，字节
+        mMediaRecorder.setMaxFileSize(60 * 1024 * 1024);
+        //再用44.1Hz采样率
+        mMediaRecorder.setAudioEncodingBitRate(22050);
+        //设置帧率，该帧率必须是硬件支持的，可以通过Camera.CameraParameter.getSupportedPreviewFpsRange()方法获取相机支持的帧率
+        mMediaRecorder.setVideoFrameRate(mFps);
+        //设置码率
+        mMediaRecorder.setVideoEncodingBitRate(500 * 1024 * 8);
+        //设置视频尺寸，通常搭配码率一起使用，可调整视频清晰度
+        mMediaRecorder.setVideoSize(1280, 720);
+    }
+
+    //录制出错的回调
+    private MediaRecorder.OnErrorListener onErrorListener = new MediaRecorder.OnErrorListener() {
+        @Override
+        public void onError(MediaRecorder mr, int what, int extra) {
+            try {
+                if (mMediaRecorder != null) {
+                    mMediaRecorder.reset();
+                }
+            } catch (Exception e) {
+                Log.e(TAG, e.getMessage());
+            } finally {
+                if (mRecordCallback != null) {
+                    mRecordCallback.onError(recordTask, "media record error: " + what);
+                }
+            }
+        }
+    };
 }

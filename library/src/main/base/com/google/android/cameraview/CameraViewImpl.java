@@ -38,9 +38,13 @@ abstract class CameraViewImpl {
     /**
      * @return {@code true} if the implementation was able to start the camera session.
      */
-    abstract boolean start();
+    abstract boolean start(RecordTask task);
 
     abstract void stop();
+
+    abstract boolean startRecord(RecordCallback callback);
+
+    abstract void stopRecord();
 
     abstract boolean isCameraOpened();
 
