@@ -104,8 +104,8 @@ class Camera2 extends CameraViewImpl {
         public void onError(@NonNull CameraDevice camera, int error) {
             Log.e(TAG, "onError: " + camera.getId() + " (" + error + ")");
             mCameraDevice = null;
-            if (mRecordCallback != null) {
-                mRecordCallback.onError(recordTask, "open camera error, cameraId: " + camera.getId() + ", error: " + error);
+            if (mCallback != null) {
+                mCallback.onRecordError("open camera error, cameraId: " + camera.getId() + ", error: " + error);
             }
         }
 
@@ -214,12 +214,12 @@ class Camera2 extends CameraViewImpl {
 
     private int mDisplayOrientation;
 
-    private int mFps;//帧率
     private MediaRecorder mMediaRecorder;
-    private RecordCallback mRecordCallback;
-    private RecordTask recordTask;
+//    private RecordCallback mRecordCallback;
+//    private RecordTask recordTask;
     private RecorderStatus mStatus = RecorderStatus.RELEASED;//录制状态
     private File tempVideoFile;
+    private String mSaveVidePath;
     private android.util.Size mVideoSize;
     private android.util.Size mPreviewSize;
     private boolean videoPreviewMode = true;//视频预览模式预览到录制无卡顿，但预览尺寸可能受限
@@ -237,12 +237,7 @@ class Camera2 extends CameraViewImpl {
     }
 
     @Override
-    boolean start(RecordTask task) {
-        if (task == null) {
-            recordTask = new RecordTask.Builder().build();
-        } else {
-            recordTask = task;
-        }
+    boolean start() {
         if (!chooseCameraIdByFacing()) {
             return false;
         }
@@ -269,7 +264,7 @@ class Camera2 extends CameraViewImpl {
     }
 
     @Override
-    boolean startRecord(RecordCallback callback) {
+    boolean startRecord(String videoPath) {
         if (!videoPreviewMode) {
             startVideoPreviewSession();
         }
@@ -282,12 +277,12 @@ class Camera2 extends CameraViewImpl {
     @Override
     void stopRecord() {
         stopRecordVideoInner();
-        if (recordTask.getOutput() == null) {
-            recordTask.setOutput(new File(tempVideoFile.getParent(), System.currentTimeMillis() + VIDEO_EXTENSION));
-        }
-        tempVideoFile.renameTo(recordTask.getOutput());
-        if (mRecordCallback != null) {
-            mRecordCallback.onFinish(recordTask);
+        if (mCallback != null) {
+            if (tempVideoFile.renameTo(new File(mSaveVidePath))) {
+                mCallback.onRecordFinished(mSaveVidePath);
+            } else {
+                mCallback.onRecordError("invalid record path");
+            }
         }
     }
 
@@ -304,7 +299,7 @@ class Camera2 extends CameraViewImpl {
         mFacing = facing;
         if (isCameraOpened()) {
             stop();
-            start(recordTask);
+            start();
         }
     }
 
@@ -1008,8 +1003,8 @@ class Camera2 extends CameraViewImpl {
             } catch (Exception e) {
                 Log.e(TAG, e.getMessage());
             } finally {
-                if (mRecordCallback != null) {
-                    mRecordCallback.onError(recordTask, "media record error: " + what);
+                if (mCallback != null) {
+                    mCallback.onRecordError("media record error: " + what);
                 }
             }
         }

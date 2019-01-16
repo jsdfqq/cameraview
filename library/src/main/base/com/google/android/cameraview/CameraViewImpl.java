@@ -38,11 +38,11 @@ abstract class CameraViewImpl {
     /**
      * @return {@code true} if the implementation was able to start the camera session.
      */
-    abstract boolean start(RecordTask task);
+    abstract boolean start();
 
     abstract void stop();
 
-    abstract boolean startRecord(RecordCallback callback);
+    abstract boolean startRecord(String savePath);
 
     abstract void stopRecord();
 
@@ -80,6 +80,10 @@ abstract class CameraViewImpl {
         void onCameraClosed();
 
         void onPictureTaken(byte[] data);
+
+        void onRecordFinished(String videoPath);
+
+        void onRecordError(String errorMsg);
 
     }
 

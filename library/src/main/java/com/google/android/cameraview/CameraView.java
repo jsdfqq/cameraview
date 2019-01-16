@@ -242,17 +242,20 @@ public class CameraView extends FrameLayout {
      * Open a camera device and start showing camera preview. This is typically called from
      * {@link Activity#onResume()}.
      */
-    public void start(RecordTask task) {
-        if (!mImpl.start(task)) {
+    public void start() {
+        if (!mImpl.start()) {
             //store the state ,and restore this state after fall back o Camera1
             Parcelable state=onSaveInstanceState();
             // Camera2 uses legacy hardware layer; fall back to Camera1
             mImpl = new Camera1(mCallbacks, createPreviewImpl(getContext()));
             onRestoreInstanceState(state);
-            mImpl.start(task);
+            mImpl.start();
         }
     }
 
+    public void startRecord(String savePath) {
+        mImpl.startRecord(savePath);
+    }
     /**
      * Stop camera preview and close the device. This is typically called from
      * {@link Activity#onPause()}.
@@ -261,6 +264,9 @@ public class CameraView extends FrameLayout {
         mImpl.stop();
     }
 
+    public void stopRecord() {
+        mImpl.stopRecord();
+    }
     /**
      * @return {@code true} if the camera is opened.
      */
@@ -449,6 +455,20 @@ public class CameraView extends FrameLayout {
             }
         }
 
+        @Override
+        public void onRecordFinished(String videoPath) {
+            for (Callback callback : mCallbacks) {
+                callback.onRecordFinished(CameraView.this, videoPath);
+            }
+        }
+
+        @Override
+        public void onRecordError(String errorMsg) {
+            for (Callback callback : mCallbacks) {
+                callback.onRecordError(CameraView.this, errorMsg);
+            }
+        }
+
         public void reserveRequestLayoutOnOpen() {
             mRequestLayoutOnOpen = true;
         }
@@ -534,6 +554,13 @@ public class CameraView extends FrameLayout {
          * @param data       JPEG data.
          */
         public void onPictureTaken(CameraView cameraView, byte[] data) {
+        }
+
+        public void onRecordFinished(CameraView cameraView, String videoPath) {
+
+        }
+        public void onRecordError(CameraView cameraView, String error) {
+
         }
     }
 

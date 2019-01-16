@@ -17,7 +17,6 @@
 package com.google.android.cameraview;
 
 import android.annotation.SuppressLint;
-import android.annotation.TargetApi;
 import android.graphics.SurfaceTexture;
 import android.hardware.Camera;
 import android.media.CamcorderProfile;
@@ -81,8 +80,9 @@ class Camera1 extends CameraViewImpl {
 
     private int mFps;//帧率
     private MediaRecorder mMediaRecorder;
-    private RecordCallback mRecordCallback;
-    private RecordTask recordTask;
+//    private RecordCallback mRecordCallback;
+    private String mSaveVideoPath;
+//    private RecordTask recordTask;
     private RecorderStatus mStatus = RecorderStatus.RELEASED;//录制状态
 
     Camera1(Callback callback, PreviewImpl preview) {
@@ -99,12 +99,7 @@ class Camera1 extends CameraViewImpl {
     }
 
     @Override
-    boolean start(RecordTask task) {
-        if (task == null) {
-            recordTask = new RecordTask.Builder().build();
-        } else {
-            recordTask = task;
-        }
+    boolean start() {
         chooseCamera();
         openCamera();
         if (mPreview.isReady()) {
@@ -125,8 +120,8 @@ class Camera1 extends CameraViewImpl {
     }
 
     @Override
-    boolean startRecord(RecordCallback callback) {
-        mRecordCallback = callback;
+    boolean startRecord(String savePath) {
+        mSaveVideoPath = savePath;
         setCameraVideoParameter(mCamera);
         mCamera.unlock();
         initMediaRecorder();
@@ -136,8 +131,8 @@ class Camera1 extends CameraViewImpl {
             mStatus = RecorderStatus.RECORDING;
         } catch (IOException e) {
             Log.e(TAG, "start record error: " + e.getMessage());
-            if (callback != null) {
-                callback.onError(recordTask, e.getMessage());
+            if (mCallback != null) {
+                mCallback.onRecordError(e.getMessage());
             }
         }
         return false;
@@ -182,7 +177,7 @@ class Camera1 extends CameraViewImpl {
         mFacing = facing;
         if (isCameraOpened()) {
             stop();
-            start(recordTask);
+            start();
         }
     }
 
@@ -603,13 +598,13 @@ class Camera1 extends CameraViewImpl {
 //        setProfile();
         setConfig();
         //设置输出的文件路径
-        if (TextUtils.isEmpty(recordTask.getOutput().getAbsolutePath())) {
-            if (mRecordCallback != null) {
-                mRecordCallback.onError(recordTask, "output path invalid!");
+        if (TextUtils.isEmpty(mSaveVideoPath)) {
+            if (mCallback != null) {
+                mCallback.onRecordError("output path invalid!");
             }
             return false;
         } else {
-            mMediaRecorder.setOutputFile(recordTask.getOutput().getAbsolutePath());
+            mMediaRecorder.setOutputFile(mSaveVideoPath);
         }
         return true;
     }
@@ -689,8 +684,8 @@ class Camera1 extends CameraViewImpl {
             } catch (Exception e) {
                 Log.e(TAG, e.getMessage());
             } finally {
-                if (mRecordCallback != null) {
-                    mRecordCallback.onError(recordTask, "media record error: " + what);
+                if (mCallback != null) {
+                    mCallback.onRecordError("media record error: " + what);
                 }
             }
         }
