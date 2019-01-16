@@ -34,6 +34,8 @@ import android.media.Image;
 import android.media.ImageReader;
 import android.media.MediaRecorder;
 import android.os.Build;
+import android.os.Handler;
+import android.os.HandlerThread;
 import android.support.annotation.NonNull;
 import android.util.Log;
 import android.util.SparseIntArray;
@@ -206,6 +208,7 @@ class Camera2 extends CameraViewImpl {
 
     private int mFacing;
 
+    //videosize根据此值确定，previewsize又根据videosize确定
     private AspectRatio mAspectRatio = Constants.DEFAULT_ASPECT_RATIO;
 
     private boolean mAutoFocus;
@@ -223,10 +226,12 @@ class Camera2 extends CameraViewImpl {
     private android.util.Size mVideoSize;
     private android.util.Size mPreviewSize;
     private boolean videoPreviewMode = true;//视频预览模式预览到录制无卡顿，但预览尺寸可能受限
+    private HandlerThread mBackgroundThread;
+    private Handler mBackgroundHandler;
 
     Camera2(Callback callback, PreviewImpl preview, Context context) {
         super(callback, preview);
-        tempVideoFile = new File(context.getExternalFilesDir("record_video"), "temp.mp4");
+        tempVideoFile = new File(context.getExternalFilesDir("record_video"), "temp" + VIDEO_EXTENSION);
         mCameraManager = (CameraManager) context.getSystemService(Context.CAMERA_SERVICE);
         mPreview.setCallback(new PreviewImpl.Callback() {
             @Override
@@ -241,6 +246,7 @@ class Camera2 extends CameraViewImpl {
         if (!chooseCameraIdByFacing()) {
             return false;
         }
+        startBackgroundThread();
         collectCameraInfo();
         prepareImageReader();
         startOpeningCamera();
@@ -261,6 +267,11 @@ class Camera2 extends CameraViewImpl {
             mImageReader.close();
             mImageReader = null;
         }
+        if (mMediaRecorder != null) {
+            mMediaRecorder.release();
+            mMediaRecorder = null;
+        }
+        stopBackgroundThread();
     }
 
     @Override
@@ -399,6 +410,19 @@ class Camera2 extends CameraViewImpl {
         mPreview.setDisplayOrientation(mDisplayOrientation);
     }
 
+    private void startBackgroundThread() {
+        mBackgroundThread = new HandlerThread("CameraBackground");
+        mBackgroundThread.start();
+        mBackgroundHandler = new Handler(mBackgroundThread.getLooper());
+    }
+
+    private void stopBackgroundThread() {
+        if (mBackgroundThread != null) {
+            mBackgroundThread.quitSafely();
+            mBackgroundThread = null;
+            mBackgroundHandler = null;
+        }
+    }
     /**
      * <p>Chooses a camera ID by the specified camera facing ({@link #mFacing}).</p>
      * <p>This rewrites {@link #mCameraId}, {@link #mCameraCharacteristics}, and optionally
@@ -472,7 +496,7 @@ class Camera2 extends CameraViewImpl {
         }
         mPreviewSizes.clear();
         for (android.util.Size size :
-                videoPreviewMode? map.getOutputSizes(MediaRecorder.class) : map.getOutputSizes(mPreview.getOutputClass())) {
+                /*videoPreviewMode? map.getOutputSizes(MediaRecorder.class) : */map.getOutputSizes(mPreview.getOutputClass())) {
             int width = size.getWidth();
             int height = size.getHeight();
             if (width <= MAX_PREVIEW_WIDTH && height <= MAX_PREVIEW_HEIGHT) {
@@ -533,6 +557,41 @@ class Camera2 extends CameraViewImpl {
         }
     }
 
+    private void startVideoPreviewSession() {
+        if (null == mCameraDevice || null == mPreview || !mPreview.isReady()) {
+            return;
+        }
+        try {
+            closePreviewSession();
+            setUpAllSize();
+            setUpMediaRecorder();
+            SurfaceTexture texture = (SurfaceTexture)mPreview.getSurfaceTexture();
+            assert texture != null;
+//            texture.setDefaultBufferSize(previewSize.getWidth(), previewSize.getHeight());
+            mPreview.setBufferSize(mPreviewSize.getWidth(), mPreviewSize.getHeight());
+            mPreviewRequestBuilder = mCameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_RECORD);
+            List<Surface> surfaces = new ArrayList<>();
+
+            // Set up Surface for the camera preview
+            Surface previewSurface = new Surface(texture);
+            surfaces.add(previewSurface);
+            mPreviewRequestBuilder.addTarget(previewSurface);
+
+            // Set up Surface for the MediaRecorder
+            Surface recorderSurface = mMediaRecorder.getSurface();
+            surfaces.add(recorderSurface);
+            mPreviewRequestBuilder.addTarget(recorderSurface);
+
+            surfaces.add(mImageReader.getSurface());
+            // Start a capture session
+            // Once the session starts, we can update the UI and start recording
+            mCameraDevice.createCaptureSession(surfaces, mSessionCallback, mBackgroundHandler);
+        } catch (CameraAccessException | IOException e) {
+            e.printStackTrace();
+        }
+
+    }
+
     private void startCapturePreviewSession() {
         if (!isCameraOpened() || !mPreview.isReady() || mImageReader == null) {
             return;
@@ -544,7 +603,7 @@ class Camera2 extends CameraViewImpl {
             mPreviewRequestBuilder = mCameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);
             mPreviewRequestBuilder.addTarget(surface);
             mCameraDevice.createCaptureSession(Arrays.asList(surface, mImageReader.getSurface()),
-                    mSessionCallback, null);
+                    mSessionCallback, mBackgroundHandler);
         } catch (CameraAccessException e) {
             throw new RuntimeException("Failed to start camera session");
         }
@@ -679,7 +738,7 @@ class Camera2 extends CameraViewImpl {
                 CaptureRequest.CONTROL_AF_TRIGGER_START);
         try {
             mCaptureCallback.setState(PictureCaptureCallback.STATE_LOCKING);
-            mCaptureSession.capture(mPreviewRequestBuilder.build(), mCaptureCallback, null);
+            mCaptureSession.capture(mPreviewRequestBuilder.build(), mCaptureCallback, mBackgroundHandler);
         } catch (CameraAccessException e) {
             Log.e(TAG, "Failed to lock focus.", e);
         }
@@ -759,7 +818,7 @@ class Camera2 extends CameraViewImpl {
             mPreviewRequestBuilder.set(CaptureRequest.CONTROL_AF_TRIGGER,
                     CaptureRequest.CONTROL_AF_TRIGGER_IDLE);
             mCaptureSession.setRepeatingRequest(mPreviewRequestBuilder.build(), mCaptureCallback,
-                    null);
+                    mBackgroundHandler);
             mCaptureCallback.setState(PictureCaptureCallback.STATE_PREVIEW);
         } catch (CameraAccessException e) {
             Log.e(TAG, "Failed to restart camera preview.", e);
@@ -849,41 +908,6 @@ class Camera2 extends CameraViewImpl {
          * Called when it is necessary to run the precapture sequence.
          */
         public abstract void onPrecaptureRequired();
-
-    }
-
-    private void startVideoPreviewSession() {
-        if (null == mCameraDevice || null == mPreview || !mPreview.isReady()) {
-            return;
-        }
-        try {
-            closePreviewSession();
-            setUpAllSize();
-            setUpMediaRecorder();
-            SurfaceTexture texture = (SurfaceTexture)mPreview.getSurfaceTexture();
-            assert texture != null;
-//            texture.setDefaultBufferSize(previewSize.getWidth(), previewSize.getHeight());
-            mPreview.setBufferSize(mPreviewSize.getWidth(), mPreviewSize.getHeight());
-            mPreviewRequestBuilder = mCameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_RECORD);
-            List<Surface> surfaces = new ArrayList<>();
-
-            // Set up Surface for the camera preview
-            Surface previewSurface = new Surface(texture);
-            surfaces.add(previewSurface);
-            mPreviewRequestBuilder.addTarget(previewSurface);
-
-            // Set up Surface for the MediaRecorder
-            Surface recorderSurface = mMediaRecorder.getSurface();
-            surfaces.add(recorderSurface);
-            mPreviewRequestBuilder.addTarget(recorderSurface);
-
-            surfaces.add(mImageReader.getSurface());
-            // Start a capture session
-            // Once the session starts, we can update the UI and start recording
-            mCameraDevice.createCaptureSession(surfaces, mSessionCallback, null);
-        } catch (CameraAccessException | IOException e) {
-            e.printStackTrace();
-        }
 
     }
 
