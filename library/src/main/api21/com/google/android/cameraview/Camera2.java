@@ -37,6 +37,7 @@ import android.os.Build;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.support.annotation.NonNull;
+import android.text.TextUtils;
 import android.util.Log;
 import android.util.SparseIntArray;
 import android.view.Surface;
@@ -206,7 +207,7 @@ class Camera2 extends CameraViewImpl {
 
     private final SizeMap mPictureSizes = new SizeMap();
 
-    private int mFacing;
+    private int mFacing = CameraView.FACING_BACK;
 
     //videosize根据此值确定，previewsize又根据videosize确定
     private AspectRatio mAspectRatio = Constants.DEFAULT_ASPECT_RATIO;
@@ -221,17 +222,18 @@ class Camera2 extends CameraViewImpl {
 //    private RecordCallback mRecordCallback;
 //    private RecordTask recordTask;
     private RecorderStatus mStatus = RecorderStatus.RELEASED;//录制状态
-    private File tempVideoFile;
-    private String mSaveVidePath;
+//    private File tempVideoFile;
+    private String mSaveVideoPath;
     private android.util.Size mVideoSize;
     private android.util.Size mPreviewSize;
     private boolean videoPreviewMode = true;//视频预览模式预览到录制无卡顿，但预览尺寸可能受限
     private HandlerThread mBackgroundThread;
     private Handler mBackgroundHandler;
+    private boolean mIsRecordingVideo;
 
     Camera2(Callback callback, PreviewImpl preview, Context context) {
         super(callback, preview);
-        tempVideoFile = new File(context.getExternalFilesDir("record_video"), "temp" + VIDEO_EXTENSION);
+        mSaveVideoPath = new File(context.getExternalFilesDir("video_cache"), "temp" + VIDEO_EXTENSION).getAbsolutePath();
         mCameraManager = (CameraManager) context.getSystemService(Context.CAMERA_SERVICE);
         mPreview.setCallback(new PreviewImpl.Callback() {
             @Override
@@ -275,13 +277,23 @@ class Camera2 extends CameraViewImpl {
     }
 
     @Override
-    boolean startRecord(String videoPath) {
+    void setVideoSavePath(String path) {
+        if (TextUtils.isEmpty(path)) {
+            mCallback.onRecordError("invalid save video path, null or empty");
+            return;
+        }
+        mSaveVideoPath = path;
+    }
+
+    @Override
+    boolean startRecord() {
         if (!videoPreviewMode) {
             startVideoPreviewSession();
         }
         if (mMediaRecorder != null) {
             mMediaRecorder.start();
         }
+        mIsRecordingVideo = true;
         return false;
     }
 
@@ -289,11 +301,7 @@ class Camera2 extends CameraViewImpl {
     void stopRecord() {
         stopRecordVideoInner();
         if (mCallback != null) {
-            if (tempVideoFile.renameTo(new File(mSaveVidePath))) {
-                mCallback.onRecordFinished(mSaveVidePath);
-            } else {
-                mCallback.onRecordError("invalid record path");
-            }
+            mCallback.onRecordFinished(mSaveVideoPath);
         }
     }
 
@@ -411,9 +419,11 @@ class Camera2 extends CameraViewImpl {
     }
 
     private void startBackgroundThread() {
-        mBackgroundThread = new HandlerThread("CameraBackground");
-        mBackgroundThread.start();
-        mBackgroundHandler = new Handler(mBackgroundThread.getLooper());
+        if (mBackgroundThread == null || !mBackgroundThread.isAlive()) {
+            mBackgroundThread = new HandlerThread("CameraBackground");
+            mBackgroundThread.start();
+            mBackgroundHandler = new Handler(mBackgroundThread.getLooper());
+        }
     }
 
     private void stopBackgroundThread() {
@@ -928,13 +938,14 @@ class Camera2 extends CameraViewImpl {
         mMediaRecorder.setAudioSource(MediaRecorder.AudioSource.MIC);
         mMediaRecorder.setVideoSource(MediaRecorder.VideoSource.SURFACE);
         mMediaRecorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4);
-        mMediaRecorder.setOutputFile(tempVideoFile.getAbsolutePath());
+        mMediaRecorder.setOutputFile(mSaveVideoPath);
         mMediaRecorder.setVideoEncodingBitRate(1024*1024);
         mMediaRecorder.setVideoFrameRate(30);
         mMediaRecorder.setVideoSize(mVideoSize.getWidth(), mVideoSize.getHeight());
         mMediaRecorder.setVideoEncoder(MediaRecorder.VideoEncoder.H264);
         mMediaRecorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC);
         mMediaRecorder.setOnErrorListener(onErrorListener);
+        mMediaRecorder.setOrientationHint(90);
         switch (mSensorOrientation) {
             case SENSOR_ORIENTATION_DEFAULT_DEGREES:
 //                mMediaRecorder.setOrientationHint(DEFAULT_ORIENTATIONS.get(rotation));
@@ -954,28 +965,13 @@ class Camera2 extends CameraViewImpl {
     }
 
     private void stopRecordVideoInner() {
-        // UI
-//        mIsRecordingVideo = false;
-        // Stop recording
-        mMediaRecorder.stop();
-        mMediaRecorder.reset();
-    }
-
-    /**
-     * 释放MediaRecorder
-     */
-    private void releaseMediaRecorder() {
-        if (mMediaRecorder != null) {
-            if (mStatus == RecorderStatus.RELEASED) return;
-            mMediaRecorder.setOnErrorListener(null);
-            mMediaRecorder.setPreviewDisplay(null);
-            mMediaRecorder.reset();
-            mMediaRecorder.release();
-            mMediaRecorder = null;
-            mStatus = RecorderStatus.RELEASED;
+        if (mIsRecordingVideo) {
+            mIsRecordingVideo = false;
+            mMediaRecorder.stop();
+//        mMediaRecorder.reset();
         }
-    }
 
+    }
 
     /**
      * 通过系统的CamcorderProfile设置MediaRecorder的录制参数

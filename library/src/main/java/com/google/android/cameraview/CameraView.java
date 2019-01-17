@@ -253,8 +253,15 @@ public class CameraView extends FrameLayout {
         }
     }
 
-    public void startRecord(String savePath) {
-        mImpl.startRecord(savePath);
+    /**
+     * should be called before start()
+     * */
+    public void setVideoSavePath(String path) {
+        mImpl.setVideoSavePath(path);
+    }
+
+    public void startRecord() {
+        mImpl.startRecord();
     }
     /**
      * Stop camera preview and close the device. This is typically called from

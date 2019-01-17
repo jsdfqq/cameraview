@@ -42,7 +42,9 @@ abstract class CameraViewImpl {
 
     abstract void stop();
 
-    abstract boolean startRecord(String savePath);
+    abstract void setVideoSavePath(String path);
+
+    abstract boolean startRecord();
 
     abstract void stopRecord();
 

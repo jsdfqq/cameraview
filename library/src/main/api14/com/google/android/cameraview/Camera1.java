@@ -120,8 +120,12 @@ class Camera1 extends CameraViewImpl {
     }
 
     @Override
-    boolean startRecord(String savePath) {
-        mSaveVideoPath = savePath;
+    void setVideoSavePath(String path) {
+        mSaveVideoPath = path;
+    }
+
+    @Override
+    boolean startRecord() {
         setCameraVideoParameter(mCamera);
         mCamera.unlock();
         initMediaRecorder();
