@@ -60,7 +60,6 @@ import extension.record.RecorderStatus;
 class Camera2 extends CameraViewImpl {
     private static final int SENSOR_ORIENTATION_DEFAULT_DEGREES = 90;
     private static final int SENSOR_ORIENTATION_INVERSE_DEGREES = 270;
-    private static final String VIDEO_EXTENSION = ".mp4";
     private Integer mSensorOrientation;
     private static final String TAG = "Camera2";
 
@@ -207,8 +206,6 @@ class Camera2 extends CameraViewImpl {
 
     private final SizeMap mPictureSizes = new SizeMap();
 
-    private int mFacing = CameraView.FACING_BACK;
-
     //videosize根据此值确定，previewsize又根据videosize确定
     private AspectRatio mAspectRatio = Constants.DEFAULT_ASPECT_RATIO;
 
@@ -229,7 +226,6 @@ class Camera2 extends CameraViewImpl {
     private boolean videoPreviewMode = true;//视频预览模式预览到录制无卡顿，但预览尺寸可能受限
     private HandlerThread mBackgroundThread;
     private Handler mBackgroundHandler;
-    private boolean mIsRecordingVideo;
 
     Camera2(Callback callback, PreviewImpl preview, Context context) {
         super(callback, preview);
@@ -299,9 +295,12 @@ class Camera2 extends CameraViewImpl {
 
     @Override
     void stopRecord() {
-        stopRecordVideoInner();
-        if (mCallback != null) {
-            mCallback.onRecordFinished(mSaveVideoPath);
+        if (mIsRecordingVideo && mMediaRecorder != null) {
+            mIsRecordingVideo = false;
+            mMediaRecorder.stop();
+            if (mCallback != null) {
+                mCallback.onRecordFinished(mSaveVideoPath);
+            }
         }
     }
 
@@ -962,15 +961,6 @@ class Camera2 extends CameraViewImpl {
             mCaptureSession.close();
             mCaptureSession = null;
         }
-    }
-
-    private void stopRecordVideoInner() {
-        if (mIsRecordingVideo) {
-            mIsRecordingVideo = false;
-            mMediaRecorder.stop();
-//        mMediaRecorder.reset();
-        }
-
     }
 
     /**

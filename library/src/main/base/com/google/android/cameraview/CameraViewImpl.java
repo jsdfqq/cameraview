@@ -21,10 +21,11 @@ import android.view.View;
 import java.util.Set;
 
 abstract class CameraViewImpl {
-
+    public static final String VIDEO_EXTENSION = ".mp4";
     protected final Callback mCallback;
-
     protected final PreviewImpl mPreview;
+    protected boolean mIsRecordingVideo;
+    protected int mFacing = CameraView.FACING_BACK;
 
     CameraViewImpl(Callback callback, PreviewImpl preview) {
         mCallback = callback;

@@ -27,6 +27,7 @@ import android.text.TextUtils;
 import android.util.Log;
 import android.view.SurfaceHolder;
 
+import java.io.File;
 import java.io.IOException;
 import java.util.List;
 import java.util.Set;
@@ -72,8 +73,6 @@ class Camera1 extends CameraViewImpl {
 
     private boolean mAutoFocus;
 
-    private int mFacing;
-
     private int mFlash;
 
     private int mDisplayOrientation;
@@ -83,10 +82,10 @@ class Camera1 extends CameraViewImpl {
 //    private RecordCallback mRecordCallback;
     private String mSaveVideoPath;
 //    private RecordTask recordTask;
-    private RecorderStatus mStatus = RecorderStatus.RELEASED;//录制状态
 
     Camera1(Callback callback, PreviewImpl preview) {
         super(callback, preview);
+        mSaveVideoPath = new File(preview.getView().getContext().getExternalFilesDir("video_cache"), "temp" + VIDEO_EXTENSION).getAbsolutePath();
         preview.setCallback(new PreviewImpl.Callback() {
             @Override
             public void onSurfaceChanged() {
@@ -132,7 +131,7 @@ class Camera1 extends CameraViewImpl {
         try {
             mMediaRecorder.prepare();
             mMediaRecorder.start();
-            mStatus = RecorderStatus.RECORDING;
+            mIsRecordingVideo = true;
         } catch (IOException e) {
             Log.e(TAG, "start record error: " + e.getMessage());
             if (mCallback != null) {
@@ -144,7 +143,13 @@ class Camera1 extends CameraViewImpl {
 
     @Override
     void stopRecord() {
-
+        if (mIsRecordingVideo && mMediaRecorder != null) {
+            mIsRecordingVideo = false;
+            mMediaRecorder.stop();
+            if (mCallback != null) {
+                mCallback.onRecordFinished(mSaveVideoPath);
+            }
+        }
     }
 
     // Suppresses Camera#setPreviewTexture
@@ -213,7 +218,7 @@ class Camera1 extends CameraViewImpl {
                 throw new UnsupportedOperationException(ratio + " is not supported");
             } else {
                 mAspectRatio = ratio;
-                adjustCameraParameters();
+//                adjustCameraParameters();
                 return true;
             }
         }
@@ -586,12 +591,11 @@ class Camera1 extends CameraViewImpl {
     private boolean initMediaRecorder() {
         //如果是处于release状态，那么只有重新new一个进入initial状态
         //否则其他状态都可以通过reset()方法回到initial状态
-        if (mStatus == RecorderStatus.RELEASED) {
+        if (mMediaRecorder == null) {
             mMediaRecorder = new MediaRecorder();
         } else {
             mMediaRecorder.reset();
         }
-        //设置选择角度，顺时针方向，因为默认是逆向90度的，这样图像就是正常显示了,这里设置的是观看保存后的视频的角度
         mMediaRecorder.setCamera(mCamera);
         mMediaRecorder.setOnErrorListener(onErrorListener);
         //采集声音来源、mic是麦克风
@@ -599,7 +603,7 @@ class Camera1 extends CameraViewImpl {
         //采集图像来源、
         mMediaRecorder.setVideoSource(MediaRecorder.VideoSource.CAMERA);
         //设置编码参数
-//        setProfile();
+        setProfile();
         setConfig();
         //设置输出的文件路径
         if (TextUtils.isEmpty(mSaveVideoPath)) {
@@ -614,21 +618,6 @@ class Camera1 extends CameraViewImpl {
     }
 
 
-    /**
-     * 释放MediaRecorder
-     */
-    private void releaseMediaRecorder() {
-        if (mMediaRecorder != null) {
-            if (mStatus == RecorderStatus.RELEASED) return;
-            mMediaRecorder.setOnErrorListener(null);
-            mMediaRecorder.setPreviewDisplay(null);
-            mMediaRecorder.reset();
-            mMediaRecorder.release();
-            mMediaRecorder = null;
-            mStatus = RecorderStatus.RELEASED;
-        }
-    }
-
 
     /**
      * 通过系统的CamcorderProfile设置MediaRecorder的录制参数
@@ -636,12 +625,12 @@ class Camera1 extends CameraViewImpl {
     private void setProfile() {
         CamcorderProfile profile = null;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.HONEYCOMB) {
-            if (CamcorderProfile.hasProfile(CamcorderProfile.QUALITY_1080P)) {
-                profile = CamcorderProfile.get(CamcorderProfile.QUALITY_1080P);
+            if (CamcorderProfile.hasProfile(CamcorderProfile.QUALITY_480P)) {
+                profile = CamcorderProfile.get(CamcorderProfile.QUALITY_480P);
             } else if (CamcorderProfile.hasProfile(CamcorderProfile.QUALITY_720P)) {
                 profile = CamcorderProfile.get(CamcorderProfile.QUALITY_720P);
-            } else if (CamcorderProfile.hasProfile(CamcorderProfile.QUALITY_480P)) {
-                profile = CamcorderProfile.get(CamcorderProfile.QUALITY_480P);
+            } else if (CamcorderProfile.hasProfile(CamcorderProfile.QUALITY_1080P)) {
+                profile = CamcorderProfile.get(CamcorderProfile.QUALITY_1080P);
 
             }
         }
@@ -656,25 +645,15 @@ class Camera1 extends CameraViewImpl {
      */
     private void setConfig() {
         //设置封装格式 默认是MP4
-        mMediaRecorder.setOutputFormat(MediaRecorder.OutputFormat.DEFAULT);
-        //音频编码
-        mMediaRecorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC);
-        //图像编码
+        mMediaRecorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4);
+        mMediaRecorder.setOutputFile(mSaveVideoPath);
+        mMediaRecorder.setVideoEncodingBitRate(1024*1024);
+        mMediaRecorder.setVideoFrameRate(30);
+        mMediaRecorder.setVideoSize(640, 480);
         mMediaRecorder.setVideoEncoder(MediaRecorder.VideoEncoder.H264);
-        //声道
-        mMediaRecorder.setAudioChannels(1);
-        //设置最大录像时间 单位：毫秒
-        mMediaRecorder.setMaxDuration(60 * 1000);
-        //设置最大录制的大小60M 单位，字节
-        mMediaRecorder.setMaxFileSize(60 * 1024 * 1024);
-        //再用44.1Hz采样率
-        mMediaRecorder.setAudioEncodingBitRate(22050);
-        //设置帧率，该帧率必须是硬件支持的，可以通过Camera.CameraParameter.getSupportedPreviewFpsRange()方法获取相机支持的帧率
-        mMediaRecorder.setVideoFrameRate(mFps);
-        //设置码率
-        mMediaRecorder.setVideoEncodingBitRate(500 * 1024 * 8);
-        //设置视频尺寸，通常搭配码率一起使用，可调整视频清晰度
-        mMediaRecorder.setVideoSize(1280, 720);
+        mMediaRecorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC);
+        mMediaRecorder.setOnErrorListener(onErrorListener);
+        mMediaRecorder.setOrientationHint(90);
     }
 
     //录制出错的回调

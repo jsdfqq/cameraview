@@ -21,6 +21,8 @@ import android.os.Parcelable;
 import android.support.annotation.NonNull;
 import android.support.v4.util.SparseArrayCompat;
 
+import java.util.Set;
+
 /**
  * Immutable class for describing proportional relationship between width and height.
  */
@@ -186,4 +188,17 @@ public class AspectRatio implements Comparable<AspectRatio>, Parcelable {
         }
     };
 
+    public static AspectRatio getClosestRatios(AspectRatio baseRatio, Set<AspectRatio> source) {
+        float base = baseRatio.toFloat();
+        float minDelta = 1;
+        AspectRatio result = null;
+        for (AspectRatio aspectRatio : source) {
+            float newDelta = Math.abs(aspectRatio.toFloat() - base);
+            if (newDelta < minDelta) {
+                minDelta = newDelta;
+                result = aspectRatio;
+            }
+        }
+        return result;
+    }
 }

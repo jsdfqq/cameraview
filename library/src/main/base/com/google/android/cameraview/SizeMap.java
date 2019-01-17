@@ -68,7 +68,7 @@ class SizeMap {
     }
 
     SortedSet<Size> sizes(AspectRatio ratio) {
-        return mRatios.get(getClosestRatios(ratio, mRatios.keySet()));
+        return mRatios.get(AspectRatio.getClosestRatios(ratio, mRatios.keySet()));
     }
 
     void clear() {
@@ -77,19 +77,6 @@ class SizeMap {
 
     boolean isEmpty() {
         return mRatios.isEmpty();
-    }
-
-    private AspectRatio getClosestRatios(AspectRatio baseRatio, Set<AspectRatio> source) {
-        float base = baseRatio.toFloat();
-        float minDelta = 1;
-        AspectRatio result = null;
-        for (AspectRatio aspectRatio : source) {
-            if (Math.abs(aspectRatio.toFloat() - base) < minDelta) {
-                minDelta = aspectRatio.toFloat();
-                result = aspectRatio;
-            }
-        }
-        return result;
     }
 
 }
