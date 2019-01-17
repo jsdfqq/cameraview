@@ -598,22 +598,12 @@ class Camera1 extends CameraViewImpl {
         }
         mMediaRecorder.setCamera(mCamera);
         mMediaRecorder.setOnErrorListener(onErrorListener);
-        //采集声音来源、mic是麦克风
         mMediaRecorder.setAudioSource(MediaRecorder.AudioSource.MIC);
-        //采集图像来源、
         mMediaRecorder.setVideoSource(MediaRecorder.VideoSource.CAMERA);
         //设置编码参数
-        setProfile();
+//        setProfile();
         setConfig();
-        //设置输出的文件路径
-        if (TextUtils.isEmpty(mSaveVideoPath)) {
-            if (mCallback != null) {
-                mCallback.onRecordError("output path invalid!");
-            }
-            return false;
-        } else {
-            mMediaRecorder.setOutputFile(mSaveVideoPath);
-        }
+
         return true;
     }
 
