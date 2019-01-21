@@ -557,8 +557,8 @@ class Camera1 extends CameraViewImpl {
 
         //设置预览尺寸,因为预览的尺寸和最终是录制视频的尺寸无关，所以我们选取最大的数值
         //通常最大的是手机的分辨率，这样可以让预览画面尽可能清晰并且尺寸不变形，前提是TextureView的尺寸是全屏或者接近全屏
-//        List<Camera.Size> supportedPreviewSizes = parameters.getSupportedPreviewSizes();
-//        parameters.setPreviewSize(supportedPreviewSizes.get(0).width, supportedPreviewSizes.get(0).height);
+        List<Camera.Size> supportedPreviewSizes = parameters.getSupportedPreviewSizes();
+        parameters.setPreviewSize(supportedPreviewSizes.get(0).width, supportedPreviewSizes.get(0).height);
         //缩短Recording启动时间
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.ICE_CREAM_SANDWICH) {
             parameters.setRecordingHint(true);

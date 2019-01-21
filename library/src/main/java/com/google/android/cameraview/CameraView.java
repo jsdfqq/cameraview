@@ -28,6 +28,7 @@ import android.support.annotation.Nullable;
 import android.support.v4.os.ParcelableCompat;
 import android.support.v4.os.ParcelableCompatCreatorCallbacks;
 import android.support.v4.view.ViewCompat;
+import android.text.TextUtils;
 import android.util.AttributeSet;
 import android.widget.FrameLayout;
 
@@ -75,6 +76,8 @@ public class CameraView extends FrameLayout {
     private final CallbackBridge mCallbacks;
 
     private boolean mAdjustViewBounds;
+
+    private String mSaveVideoPath;
 
     private final DisplayOrientationDetector mDisplayOrientationDetector;
 
@@ -248,6 +251,9 @@ public class CameraView extends FrameLayout {
             Parcelable state=onSaveInstanceState();
             // Camera2 uses legacy hardware layer; fall back to Camera1
             mImpl = new Camera1(mCallbacks, createPreviewImpl(getContext()));
+            if (!TextUtils.isEmpty(mSaveVideoPath)) {
+                mImpl.setVideoSavePath(mSaveVideoPath);
+            }
             onRestoreInstanceState(state);
             mImpl.start();
         }
@@ -257,6 +263,7 @@ public class CameraView extends FrameLayout {
      * should be called before start()
      * */
     public void setVideoSavePath(String path) {
+        mSaveVideoPath = path;
         mImpl.setVideoSavePath(path);
     }
 
