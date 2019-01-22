@@ -65,7 +65,7 @@ uploadArchives {
             }
             pom.groupId = 'com.ymm.lib'
             pom.artifactId = 'camera_v2'
-            pom.version = '1.0.0-SNAPSHOT'
+            pom.version = '1.0.0'
         }
     }
 
